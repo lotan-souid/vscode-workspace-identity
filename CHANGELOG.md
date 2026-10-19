@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.0.5 — 2026-10-19
+
+- Document the Windows Git Bash workflow for building a VSIX and updating Linux Remote-SSH hosts.
+- Clarify that local updates and Settings Sync do not upgrade existing remote installations.
+- Explain installer prerequisites, package selection, supported hosts and version verification.
+- Clarify Marketplace auto-update requirements when migrating from VSIX installations.
+- No runtime code changes since 0.0.4.
+
 ## 0.0.4 — 2026-10-19
 
 - Preserve recovery data until Remote settings are successfully restored, so failed cleanup can be retried safely.

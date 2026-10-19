@@ -2,7 +2,7 @@
 	"name": "vscode-workspace-identity",
 	"displayName": "Workspace Identity",
 	"description": "Give every remote host its own theme, color and window title, while all other settings stay shared.",
-	"version": "0.0.4",
+	"version": "0.0.5",
 	"publisher": "lotsuid",
 	"private": true,
 	"engines": {

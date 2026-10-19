@@ -2,6 +2,8 @@
 
 Every remote host gets its own color theme, window color and title, so you can tell at a glance which machine a VS Code window is connected to. Everything else stays shared.
 
+Current version: **0.0.5**. See [CHANGELOG.md](CHANGELOG.md) for changes.
+
 ## How it works
 
 VS Code layers settings like this, weakest first:
@@ -82,15 +84,50 @@ From then on, every remote window checks whether the host has the extension. If 
 
 ### Updating hosts
 
-The automatic install checks only whether the extension is present, never its version, so a new version needs one more step:
+Updating the local copy does **not** update copies already installed on remote hosts. The automatic installation above installs a missing extension; it does not keep an existing remote copy at the same version as your local copy. Settings Sync does not synchronize extensions into SSH, WSL or container environments.
 
 1. Install the new VSIX on your own computer, so new hosts get it.
 2. Update existing hosts over SSH:
    ```sh
-   scripts/install-on-hosts.sh host1 host2
+   bash scripts/install-on-hosts.sh host1 host2
    ```
    The script uses the VS Code Server that Remote-SSH already put on each host. Run it from any machine that can SSH to them, such as Git Bash on Windows.
 3. Reload the open windows on those hosts.
+
+### Updating from Windows with Git Bash
+
+Run the script on your Windows computer in **Git Bash** (included with Git for Windows). You need working `ssh` and `scp` commands in that terminal. This script supports Linux SSH hosts with a standard `~/.vscode-server` installation; it does not update WSL, containers, Windows SSH hosts or custom server installation paths.
+
+1. Clone the repository, or run `git pull --ff-only` inside your existing clone:
+   ```bash
+   git clone https://github.com/lotan-souid/vscode-workspace-identity.git
+   cd vscode-workspace-identity
+   ```
+   To open an existing clone from Git Bash, a Windows path such as `C:\Users\YOUR_USER\projects\vscode-workspace-identity` becomes:
+   ```bash
+   cd /c/Users/YOUR_USER/projects/vscode-workspace-identity
+   ```
+2. Put the packaged VSIX in the repository root, next to `package.json`. VSIX files are excluded from Git, so cloning or pulling the repository does not download a package. To build the current version yourself, install Node 24 and run:
+   ```bash
+   npm ci
+   npm run package
+   ```
+   For version 0.0.5 this creates `vscode-workspace-identity-0.0.5.vsix`. Node is required for building, not for running the installer script.
+3. Verify SSH access from this same Git Bash terminal:
+   ```bash
+   ssh my-server
+   ```
+   Replace `my-server` with an SSH config alias or `user@hostname`. After checking the connection, run `exit` to return to your local terminal. If the alias only works in VS Code, check that Git Bash uses the same SSH configuration, keys and agent.
+4. Update one or more hosts:
+   ```bash
+   bash scripts/install-on-hosts.sh my-server
+   # Or update several hosts:
+   bash scripts/install-on-hosts.sh dev-server prod-server
+   ```
+   The script selects the package with the newest modification time in the repository root, copies it over SSH, and installs it with `--force` through the existing VS Code Server. Check the printed `Installing ...` filename; remove or move older packages if needed. Each host must have been opened with Remote-SSH at least once.
+5. In each connected VS Code window, run **Developer: Reload Window**. Hover over the Workspace Identity status bar item to verify the running version.
+
+This updates the remote hosts only. Install the same VSIX locally with **Extensions: Install from VSIX…** to update your Windows copy as well.
 
 ### By hand, on one host
 
@@ -98,7 +135,7 @@ In a terminal of a remote window, run `code --install-extension vscode-workspace
 
 ### Through the Marketplace
 
-Publish the extension. Then `"remote.SSH.defaultExtensions": ["<publisher>.vscode-workspace-identity"]` installs it on every host, and the Marketplace keeps every copy updated.
+Publish the extension. Then `"remote.SSH.defaultExtensions": ["<publisher>.vscode-workspace-identity"]` installs it on SSH hosts. With auto-update enabled for the extension, each installation gets updates from the Marketplace independently. Auto-update is disabled by default for VSIX installations; enable it explicitly when moving to Marketplace distribution. See [VS Code's extension management documentation](https://code.visualstudio.com/docs/configure/extensions/extension-marketplace).
 
 ### Own the publisher ID
 
