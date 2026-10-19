@@ -1,7 +1,8 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import { applyEdits, FormattingOptions, modify, parse, ParseError, printParseErrorCode } from 'jsonc-parser';
-import { DesiredSetting, isPlainObject, SettingPath } from './hosts';
+import { COLOR_CUSTOMIZATIONS, DesiredSetting, isPlainObject, SettingPath } from './hosts';
 
 /**
  * A host's Remote settings live in `<server data dir>/Machine/settings.json`, e.g.
@@ -28,6 +29,8 @@ interface ManagedEntry {
 	/** Whether the path held a value before it was first managed, and that value, for restoring it later. */
 	hadPrevious: boolean;
 	previous?: unknown;
+	/** Keep a pre-existing empty parent object when removing a nested color. */
+	keepEmptyParent?: boolean;
 }
 
 /** Kept beside the settings file, so every window connected to the host shares it. */
@@ -55,14 +58,20 @@ function stateFilePath(settingsFile: string): string {
 export function applyManagedSettings(settingsFile: string, desired: readonly DesiredSetting[]): Promise<ApplyResult> {
 	return withLock(settingsFile, async () => {
 		const stateFile = stateFilePath(settingsFile);
-		const original = (await readText(settingsFile)) ?? '';
-		const baseline = original.trim() ? original : '{}';
+		const original = await readText(settingsFile);
+		const content = original ?? '';
+		const baseline = content.trim() ? content : '{}';
 		assertSettingsObject(settingsFile, baseline);
 
 		const state = await readState(stateFile);
 		const stateBefore = JSON.stringify(state);
 		const formatting = detectFormatting(baseline);
+		for (const setting of desired) {
+			assertSettingPath(setting.path);
+		}
 		const wanted = new Map(desired.map(d => [pathKey(d.path), d]));
+		// Retain removed entries until the settings write succeeds, including after a crash.
+		const previousManaged = { ...state.managed };
 		const result: ApplyResult = { changed: false, written: [], restored: [] };
 		let text = baseline;
 
@@ -71,27 +80,48 @@ export function applyManagedSettings(settingsFile: string, desired: readonly Des
 				continue;
 			}
 			text = setValue(text, entry.path, entry.hadPrevious ? entry.previous : undefined, formatting);
-			text = removeIfEmptyObject(text, entry.path.slice(0, -1), formatting);
+			if (!entry.keepEmptyParent) {
+				text = removeIfEmptyObject(text, entry.path.slice(0, -1), formatting);
+			}
 			delete state.managed[key];
 			result.restored.push(entry.path);
 		}
 
 		for (const [key, { path: settingPath, value }] of wanted) {
 			const current = getValue(text, settingPath);
-			state.managed[key] ??= { path: [...settingPath], hadPrevious: current !== undefined, previous: current };
+			if (settingPath.length === 2) {
+				const parent = getValue(text, settingPath.slice(0, -1));
+				if (parent !== undefined && !isPlainObject(parent)) {
+					throw new Error(`Cannot manage ${settingPath.join(' > ')}: its parent is not an object.`);
+				}
+			}
+			const previousSibling = Object.values(previousManaged).find(entry => entry.path[0] === settingPath[0]);
+			state.managed[key] ??= {
+				path: [...settingPath], hadPrevious: current !== undefined, previous: current,
+				keepEmptyParent: settingPath.length === 2 &&
+					(previousSibling ? previousSibling.keepEmptyParent === true :
+						isPlainObject(getValue(baseline, settingPath.slice(0, -1)))),
+			};
 			if (!deepEqual(current, value)) {
 				text = setValue(text, settingPath, value, formatting);
 				result.written.push(settingPath);
 			}
 		}
 
-		// State first: if the settings write then fails, the next run still knows what to restore.
-		if (JSON.stringify(state) !== stateBefore) {
-			await writeState(stateFile, state);
+		const pending: HostState = { version: 1, managed: { ...previousManaged, ...state.managed } };
+		if (JSON.stringify(pending) !== stateBefore) {
+			await writeState(stateFile, pending);
 		}
 		if (text !== baseline) {
+			// Our lock covers extension windows; detect edits by VS Code or another editor as well.
+			if ((await readText(settingsFile)) !== original) {
+				throw new Error('Remote settings changed while applying the identity. Retry after saving your settings.');
+			}
 			await writeAtomic(settingsFile, text);
 			result.changed = true;
+		}
+		if (JSON.stringify(state) !== JSON.stringify(pending)) {
+			await writeState(stateFile, state);
 		}
 		return result;
 	});
@@ -162,7 +192,7 @@ function deepEqual(a: unknown, b: unknown): boolean {
 	}
 	if (isPlainObject(a) && isPlainObject(b)) {
 		const keys = Object.keys(a);
-		return keys.length === Object.keys(b).length && keys.every(key => deepEqual(a[key], b[key]));
+		return keys.length === Object.keys(b).length && keys.every(key => Object.prototype.hasOwnProperty.call(b, key) && deepEqual(a[key], b[key]));
 	}
 	return false;
 }
@@ -178,37 +208,72 @@ async function readText(file: string): Promise<string | undefined> {
 	}
 }
 
+function assertSettingPath(value: unknown): asserts value is string[] {
+	if (!Array.isArray(value) || value.length < 1 || value.length > 2 ||
+		(value.length === 2 && value[0] !== COLOR_CUSTOMIZATIONS) ||
+		value.some(key => typeof key !== 'string' || !key || ['__proto__', 'constructor', 'prototype'].includes(key))) {
+		throw new Error('Invalid managed setting path.');
+	}
+}
+
 async function readState(stateFile: string): Promise<HostState> {
 	const text = await readText(stateFile);
-	if (text) {
-		try {
-			const parsed: unknown = JSON.parse(text);
-			if (isPlainObject(parsed) && parsed.version === 1) {
-				return { version: 1, managed: isPlainObject(parsed.managed) ? (parsed.managed as Record<string, ManagedEntry>) : {} };
-			}
-		} catch {
-			// Unreadable state: start over rather than block the identity.
-		}
+	if (text === undefined) {
+		return { version: 1, managed: {} };
 	}
-	return { version: 1, managed: {} };
+	let state: HostState;
+	try {
+		const parsed: unknown = JSON.parse(text);
+		if (!isPlainObject(parsed) || parsed.version !== 1 || !isPlainObject(parsed.managed)) {
+			throw new Error('Unsupported state format.');
+		}
+		for (const [key, entry] of Object.entries(parsed.managed)) {
+			if (!isPlainObject(entry)) {
+				throw new Error('Invalid managed entry.');
+			}
+			assertSettingPath(entry.path);
+			if (key !== pathKey(entry.path) || typeof entry.hadPrevious !== 'boolean' ||
+				(entry.hadPrevious && !Object.prototype.hasOwnProperty.call(entry, 'previous')) ||
+				(entry.keepEmptyParent !== undefined && typeof entry.keepEmptyParent !== 'boolean')) {
+				throw new Error('Invalid managed entry.');
+			}
+		}
+		state = parsed as unknown as HostState;
+	} catch {
+		throw new Error(`${stateFile} contains invalid or unsupported recovery data. Settings were left untouched; restore the state file from backup before retrying.`);
+	}
+	// Also secure recovery files created by older versions, even when this apply is a no-op.
+	await fs.chmod(stateFile, 0o600);
+	return state;
 }
 
 function writeState(stateFile: string, state: HostState): Promise<void> {
-	return writeAtomic(stateFile, JSON.stringify(state, null, '\t') + '\n');
+	return writeAtomic(stateFile, JSON.stringify(state, null, '\t') + '\n', true);
 }
 
 /**
  * Writes through a temp file and a rename, so VS Code and other windows never read a half-written file.
  * A symlinked settings file (dotfiles) stays a symlink: the rename goes to its target.
  */
-async function writeAtomic(file: string, text: string): Promise<void> {
-	const target = await fs.realpath(file).catch(() => file);
-	const mode = (await fs.stat(target).catch(() => undefined))?.mode;
-	const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
+async function writeAtomic(file: string, text: string, privateFile = false): Promise<void> {
+	const target = await fs.realpath(file).catch(err => {
+		if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+			return file;
+		}
+		throw err;
+	});
+	const stat = await fs.stat(target).catch(err => {
+		if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+			return undefined;
+		}
+		throw err;
+	});
+	const tmp = `${target}.${randomUUID()}.tmp`;
 	try {
-		await fs.writeFile(tmp, text, 'utf8');
-		if (mode !== undefined) {
-			await fs.chmod(tmp, mode & 0o777);
+		// Recovery data may contain sensitive settings. Start private, even under a permissive umask.
+		await fs.writeFile(tmp, text, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+		if (stat !== undefined && !privateFile) {
+			await fs.chmod(tmp, stat.mode & 0o777);
 		}
 		await fs.rename(tmp, target);
 	} catch (err) {

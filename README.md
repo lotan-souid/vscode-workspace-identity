@@ -14,7 +14,8 @@ The **Remote** layer is a file on the host itself, `~/.vscode-server/data/Machin
 
 - Only the keys it manages are touched. Comments and the other settings in the file are kept.
 - `workbench.colorCustomizations` is managed per color key. Colors you set on the host by hand survive.
-- Values that were there before are put back when an entry is removed.
+- Values that were there before are put back when an entry is removed. Recovery data is retained until restoration succeeds.
+- If recovery data is corrupt or unsupported, settings are left untouched. Restore `.workspace-identity.json` from backup before retrying; deleting it loses the earlier values.
 
 ## Configuration
 
@@ -120,7 +121,7 @@ Node is needed only on the machine you develop on. The hosts that run the extens
 ```sh
 nvm install       # reads .nvmrc
 npm install
-npm test          # unit tests (pure logic, no VS Code needed)
+npm test          # logic, filesystem and controller tests (VS Code API double)
 npm run build     # bundle to dist/extension.js
 npm run package   # build a .vsix
 ```
@@ -131,3 +132,5 @@ Files on the host, next to `Machine/settings.json`:
 
 - `.workspace-identity.json` holds what was managed and the values to restore.
 - `.workspace-identity.lock` serializes writes between windows.
+
+Review findings, verification and manual test limits are recorded in [REVIEW.md](https://github.com/lotan-souid/vscode-workspace-identity/blob/main/REVIEW.md); changes are listed in [CHANGELOG.md](CHANGELOG.md).

@@ -100,7 +100,7 @@ class Controller implements vscode.Disposable {
 			if (e.affectsConfiguration(SECTION)) {
 				this.scheduleApply();
 			} else if (e.affectsConfiguration(COLOR_THEME)) {
-				void this.syncThemeBack();
+				void this.enqueue(() => this.syncThemeBack());
 			}
 		}));
 		void this.apply();
@@ -161,7 +161,6 @@ class Controller implements vscode.Disposable {
 	 * there too. Carry that choice back to the central config, which stays the source of truth.
 	 */
 	private async syncThemeBack(): Promise<void> {
-		await this.queue;
 		const id = this.identity;
 		if (this.suspended || !this.settingsFile || !id?.rule || !id.theme) {
 			return;
@@ -170,7 +169,12 @@ class Controller implements vscode.Disposable {
 		if (typeof remoteTheme !== 'string' || remoteTheme === id.theme) {
 			return;
 		}
-		await writeHost(id.rule, { ...readHosts()[id.rule], theme: remoteTheme });
+		const config = readHosts()[id.rule];
+		// Another event/window may have saved this theme, or a new config may be awaiting apply.
+		if (!config || config.theme === remoteTheme || config.theme !== id.theme) {
+			return;
+		}
+		await writeHost(id.rule, { ...config, theme: remoteTheme });
 		log.info(`Theme "${remoteTheme}" saved to rule "${id.rule}".`);
 		// Every window on the host gets here; one notification is enough.
 		if (vscode.window.state.focused) {
@@ -347,14 +351,18 @@ class Controller implements vscode.Disposable {
 	 */
 	private async seedThemeAndPick(rule: string, config: HostConfig): Promise<void> {
 		const file = this.settingsFile;
+		if (this.suspended) {
+			void vscode.window.showInformationMessage('Workspace Identity is paused after cleanup. Reload this window before choosing a host theme.');
+			return;
+		}
 		if (!file) {
 			return;
 		}
 		const alreadyRemote = (await readSetting(file, [COLOR_THEME]).catch(() => undefined)) !== undefined;
 		const loaded = alreadyRemote ? Promise.resolve(true) : waitForConfigChange(COLOR_THEME, 5_000);
 		await writeHost(rule, { ...config, theme: config.theme ?? currentTheme() });
-		await this.apply();
-		if (!(await loaded)) {
+		const result = await this.apply();
+		if (!result || !(await loaded)) {
 			// Opening the picker now would change the theme of every window, not just this host's.
 			void vscode.window.showWarningMessage(
 				'Workspace Identity: VS Code has not loaded this host\'s Remote settings yet. Run "Preferences: Color Theme" in a moment; it will then apply to this host only.');
@@ -437,7 +445,7 @@ function readOptions() {
 /** `config` undefined removes the entry. */
 async function writeHost(rule: string, config: HostConfig | undefined): Promise<void> {
 	const settings = vscode.workspace.getConfiguration(SECTION);
-	const hosts: HostsConfig = { ...settings.inspect<HostsConfig>('hosts')?.globalValue };
+	const hosts: HostsConfig = Object.assign(Object.create(null), settings.inspect<HostsConfig>('hosts')?.globalValue);
 	if (config) {
 		hosts[rule] = Object.fromEntries(Object.entries(config).filter(([, v]) => v !== undefined && v !== '')) as HostConfig;
 	} else {

@@ -9,6 +9,7 @@ import {
 	findHostConfig,
 	HostInfo,
 	hostNames,
+	matchesGlob,
 	resolveIdentity,
 	sshServerAddress,
 } from '../hosts';
@@ -93,4 +94,14 @@ test('package.json defaults match the code', () => {
 	const props = pkg.contributes.configuration.properties;
 	assert.equal(props['workspaceIdentity.windowTitle'].default, DEFAULT_WINDOW_TITLE);
 	assert.deepEqual(props['workspaceIdentity.colorize'].default, DEFAULT_COLORIZE);
+});
+
+
+test('wildcards match literal punctuation and avoid exponential backtracking', () => {
+	assert.equal(matchesGlob('prod-?.[db]', 'PROD-1.[db]'), true);
+	assert.equal(matchesGlob('prod-?.[db]', 'prod-12.d'), false);
+	assert.equal(matchesGlob('*a*b', 'aaab'), true);
+	assert.equal(matchesGlob('*', ''), true);
+	assert.equal(matchesGlob('?', ''), false);
+	assert.equal(matchesGlob('a*'.repeat(30) + 'b', 'a'.repeat(100)), false);
 });

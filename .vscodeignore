@@ -9,3 +9,4 @@ esbuild.mjs
 **/*.vsix
 .nvmrc
 scripts/**
+REVIEW.md

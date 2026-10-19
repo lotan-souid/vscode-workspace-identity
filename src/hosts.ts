@@ -76,12 +76,32 @@ export function sshServerAddress(sshConnection: string | undefined): string | un
 	return parts?.length === 4 ? parts[2] : undefined;
 }
 
-/** Case-insensitive; `*` matches any run of characters, `?` exactly one. */
-export function globToRegExp(pattern: string): RegExp {
-	const body = [...pattern]
-		.map(c => (c === '*' ? '.*' : c === '?' ? '.' : c.replace(/[.+^${}()|[\]\\]/g, '\\$&')))
-		.join('');
-	return new RegExp(`^${body}$`, 'i');
+/** Case-insensitive wildcard matching without potentially exponential regular-expression backtracking. */
+export function matchesGlob(pattern: string, name: string): boolean {
+	const rule = pattern.toLowerCase();
+	const value = name.toLowerCase();
+	let p = 0;
+	let n = 0;
+	let star = -1;
+	let retry = 0;
+	while (n < value.length) {
+		if (rule[p] === '?' || rule[p] === value[n]) {
+			p++;
+			n++;
+		} else if (rule[p] === '*') {
+			star = p++;
+			retry = n;
+		} else if (star >= 0) {
+			p = star + 1;
+			n = ++retry;
+		} else {
+			return false;
+		}
+	}
+	while (rule[p] === '*') {
+		p++;
+	}
+	return p === rule.length;
 }
 
 /** Every name a rule may match: the hostname, its first label, and the SSH addresses. */
@@ -100,8 +120,7 @@ export function findHostConfig(hosts: HostsConfig, names: readonly string[]): { 
 		}
 	}
 	for (const rule of rules.filter(isGlob)) {
-		const re = globToRegExp(rule);
-		if (names.some(name => re.test(name))) {
+		if (names.some(name => matchesGlob(rule, name))) {
 			return { rule, config: hosts[rule] };
 		}
 	}

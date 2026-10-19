@@ -92,3 +92,129 @@ test('concurrent windows end up with one consistent result', async () => {
 	await applyManagedSettings(file, []);
 	assert.deepEqual(await readSetting(file, []), { 'editor.fontSize': 14 });
 });
+
+test('rejects damaged recovery data without overwriting settings or state', async () => {
+	for (const content of [
+		'', '{', '{"version":2,"managed":{}}', '{"version":1}',
+		JSON.stringify({ version: 1, managed: { bad: { path: [], hadPrevious: false } } }),
+		JSON.stringify({ version: 1, managed: { '["x"]': { path: ['y'], hadPrevious: true, previous: 1 } } }),
+		JSON.stringify({ version: 1, managed: { '["x"]': { path: ['x'], hadPrevious: true } } }),
+		JSON.stringify({ version: 1, managed: { '["__proto__"]': { path: ['__proto__'], hadPrevious: false } } }),
+	]) {
+		const file = await tempSettings('{"keep":1}');
+		const stateFile = path.join(path.dirname(file), '.workspace-identity.json');
+		await fs.writeFile(stateFile, content);
+		await assert.rejects(applyManagedSettings(file, []), /recovery data/);
+		assert.equal(await fs.readFile(file, 'utf8'), '{"keep":1}');
+		assert.equal(await fs.readFile(stateFile, 'utf8'), content);
+	}
+});
+
+test('failed cleanup keeps the backup so another window can retry', async t => {
+	const file = await tempSettings('{"workbench.colorTheme":"Original"}');
+	await applyManagedSettings(file, [{ path: ['workbench.colorTheme'], value: 'Managed' }]);
+	const rename = fs.rename;
+	const mock = t.mock.method(fs, 'rename', async (...args: Parameters<typeof fs.rename>) => {
+		if (args[1] === file) {
+			throw new Error('simulated settings write failure');
+		}
+		return rename(...args);
+	});
+	await assert.rejects(applyManagedSettings(file, []), /simulated/);
+	assert.equal(await readSetting(file, ['workbench.colorTheme']), 'Managed');
+	mock.mock.restore();
+	await applyManagedSettings(file, []);
+	assert.equal(await readSetting(file, ['workbench.colorTheme']), 'Original');
+});
+
+test('failed initial apply keeps the original value recoverable', async t => {
+	const file = await tempSettings('{"workbench.colorTheme":"Original"}');
+	const rename = fs.rename;
+	const mock = t.mock.method(fs, 'rename', async (...args: Parameters<typeof fs.rename>) => {
+		if (args[1] === file) {
+			throw new Error('simulated failure');
+		}
+		return rename(...args);
+	});
+	const desired = [{ path: ['workbench.colorTheme'], value: 'Managed' }];
+	await assert.rejects(applyManagedSettings(file, desired), /simulated/);
+	mock.mock.restore();
+	await applyManagedSettings(file, desired);
+	await applyManagedSettings(file, []);
+	assert.equal(await readSetting(file, ['workbench.colorTheme']), 'Original');
+});
+
+test('cleanup can recover after settings were restored but pruning state failed', async t => {
+	const file = await tempSettings('{"workbench.colorTheme":"Original"}');
+	await applyManagedSettings(file, [{ path: ['workbench.colorTheme'], value: 'Managed' }]);
+	const rename = fs.rename;
+	const mock = t.mock.method(fs, 'rename', async (...args: Parameters<typeof fs.rename>) => {
+		if (String(args[1]).endsWith('.workspace-identity.json')) {
+			throw new Error('simulated state write failure');
+		}
+		return rename(...args);
+	});
+	await assert.rejects(applyManagedSettings(file, []), /simulated/);
+	assert.equal(await readSetting(file, ['workbench.colorTheme']), 'Original');
+	mock.mock.restore();
+	await applyManagedSettings(file, []);
+	assert.equal(await readSetting(file, ['workbench.colorTheme']), 'Original');
+});
+
+test('detects edits made outside the extension lock before replacing settings', async t => {
+	const file = await tempSettings('{}');
+	const rename = fs.rename;
+	const mock = t.mock.method(fs, 'rename', async (...args: Parameters<typeof fs.rename>) => {
+		await rename(...args);
+		if (String(args[1]).endsWith('.workspace-identity.json')) {
+			await fs.writeFile(file, '{"editor.fontSize":17}');
+		}
+	});
+	await assert.rejects(applyManagedSettings(file, [{ path: ['workbench.colorTheme'], value: 'Managed' }]), /changed while applying/);
+	assert.deepEqual(await readSetting(file, []), { 'editor.fontSize': 17 });
+	mock.mock.restore();
+});
+
+test('preserves empty existing color objects, and removes extension-created ones after new colors are added', async () => {
+	for (const existing of [false, true]) {
+		const file = await tempSettings(existing ? JSON.stringify({ [CC]: {} }) : '{}');
+		const first = { path: [CC, 'statusBar.background'], value: '#123456' };
+		const second = { path: [CC, 'titleBar.activeBackground'], value: '#654321' };
+		await applyManagedSettings(file, [first]);
+		await applyManagedSettings(file, [first, second]);
+		await applyManagedSettings(file, []);
+		assert.deepEqual(await readSetting(file, []), existing ? { [CC]: {} } : {});
+	}
+});
+
+test('refuses to replace a scalar color container', async () => {
+	const original = JSON.stringify({ [CC]: null });
+	const file = await tempSettings(original);
+	await assert.rejects(applyManagedSettings(file, [{ path: [CC, 'statusBar.background'], value: '#123456' }]), /parent is not an object/);
+	assert.equal(await fs.readFile(file, 'utf8'), original);
+});
+
+test('atomic writes preserve settings symlinks and permissions and keep recovery data private', async () => {
+	const file = await tempSettings('{"workbench.colorTheme":"Original"}');
+	const target = file + '.dotfile';
+	await fs.rename(file, target);
+	await fs.chmod(target, 0o640);
+	await fs.symlink(target, file);
+	await applyManagedSettings(file, [{ path: ['workbench.colorTheme'], value: 'Managed' }]);
+	assert.equal((await fs.lstat(file)).isSymbolicLink(), true);
+	assert.equal((await fs.stat(target)).mode & 0o777, 0o640);
+	assert.equal((await fs.stat(path.join(path.dirname(file), '.workspace-identity.json'))).mode & 0o777, 0o600);
+	await applyManagedSettings(file, []);
+	assert.equal(await readSetting(file, ['workbench.colorTheme']), 'Original');
+	assert.deepEqual((await fs.readdir(path.dirname(file))).sort(), ['.workspace-identity.json', 'settings.json', 'settings.json.dotfile']);
+});
+
+test('tightens permissions on existing recovery data even for an unchanged identity', async () => {
+	const file = await tempSettings('{}');
+	const desired = [{ path: ['workbench.colorTheme'], value: 'Managed' }];
+	await applyManagedSettings(file, desired);
+	const stateFile = path.join(path.dirname(file), '.workspace-identity.json');
+	await fs.chmod(stateFile, 0o644);
+	assert.equal((await applyManagedSettings(file, desired)).changed, false);
+	assert.equal((await fs.stat(stateFile)).mode & 0o777, 0o600);
+});
