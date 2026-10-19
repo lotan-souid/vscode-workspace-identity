@@ -1,0 +1,193 @@
+{
+	"name": "vscode-workspace-identity",
+	"displayName": "Workspace Identity",
+	"description": "Give every remote host its own theme, color and window title, while all other settings stay shared.",
+	"version": "0.0.3",
+	"publisher": "lotsuid",
+	"private": true,
+	"engines": {
+		"vscode": "^1.90.0"
+	},
+	"categories": [
+		"Other"
+	],
+	"keywords": [
+		"remote",
+		"ssh",
+		"theme",
+		"color",
+		"window title"
+	],
+	"extensionKind": [
+		"workspace"
+	],
+	"capabilities": {
+		"untrustedWorkspaces": {
+			"supported": true
+		}
+	},
+	"activationEvents": [
+		"onStartupFinished"
+	],
+	"main": "./dist/extension.js",
+	"contributes": {
+		"configuration": {
+			"title": "Workspace Identity",
+			"properties": {
+				"workspaceIdentity.hosts": {
+					"type": "object",
+					"scope": "application",
+					"default": {},
+					"markdownDescription": "Identity per remote host. Keys are hostnames or the IP address you connect to, and `*` / `?` work as wildcards (`prod-*`). An exact name beats a pattern; among patterns, the first one listed wins.",
+					"additionalProperties": {
+						"type": "object",
+						"additionalProperties": false,
+						"properties": {
+							"label": {
+								"type": "string",
+								"description": "Name shown in the window title and status bar. Defaults to the host name."
+							},
+							"emoji": {
+								"type": "string",
+								"description": "Shown before the label, e.g. 🔴."
+							},
+							"color": {
+								"type": "string",
+								"pattern": "^(#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})|none)$",
+								"patternErrorMessage": "Use #RRGGBB, #RGB or \"none\".",
+								"markdownDescription": "Color for the title bar, activity bar and status bar (see `#workspaceIdentity.colorize#`), as `#RRGGBB`, or `none` for no color. Leave it out on a host with its own `theme` to keep the theme's colors."
+							},
+							"theme": {
+								"type": "string",
+								"description": "Color theme for windows on this host, e.g. \"Default Light Modern\". Leave it out to keep the global theme."
+							},
+							"settings": {
+								"type": "object",
+								"description": "Other settings to override on this host. Application-scoped settings have no effect in Remote settings."
+							}
+						}
+					}
+				},
+				"workspaceIdentity.autoColor": {
+					"type": "boolean",
+					"scope": "application",
+					"default": true,
+					"description": "Give hosts that have neither a color nor a theme of their own a stable color derived from their name."
+				},
+				"workspaceIdentity.colorize": {
+					"type": "array",
+					"scope": "application",
+					"uniqueItems": true,
+					"items": {
+						"type": "string",
+						"enum": [
+							"titleBar",
+							"activityBar",
+							"statusBar"
+						]
+					},
+					"default": [
+						"titleBar",
+						"activityBar",
+						"statusBar"
+					],
+					"description": "Parts of the window painted with the host color."
+				},
+				"workspaceIdentity.windowTitle": {
+					"type": "string",
+					"scope": "application",
+					"default": "${identity} — ${dirty}${activeEditorShort}${separator}${rootName}",
+					"markdownDescription": "Window title on identified hosts. `${identity}` becomes the emoji and label; every other `#window.title#` variable works as usual. Leave empty to keep `#window.title#` untouched."
+				}
+			}
+		},
+		"commands": [
+			{
+				"command": "workspaceIdentity.menu",
+				"title": "Show Actions",
+				"category": "Workspace Identity"
+			},
+			{
+				"command": "workspaceIdentity.setForThisHost",
+				"title": "Set Identity for This Host…",
+				"category": "Workspace Identity"
+			},
+			{
+				"command": "workspaceIdentity.chooseTheme",
+				"title": "Choose Theme for This Host…",
+				"category": "Workspace Identity"
+			},
+			{
+				"command": "workspaceIdentity.resetThisHost",
+				"title": "Remove Identity of This Host",
+				"category": "Workspace Identity"
+			},
+			{
+				"command": "workspaceIdentity.cleanUpThisHost",
+				"title": "Clean Up Remote Settings on This Host",
+				"category": "Workspace Identity"
+			},
+			{
+				"command": "workspaceIdentity.openSettings",
+				"title": "Open Settings",
+				"category": "Workspace Identity"
+			},
+			{
+				"command": "workspaceIdentity.openRemoteSettings",
+				"title": "Open This Host's Remote Settings File",
+				"category": "Workspace Identity"
+			},
+			{
+				"command": "workspaceIdentity.showLog",
+				"title": "Show Log",
+				"category": "Workspace Identity"
+			}
+		],
+		"menus": {
+			"commandPalette": [
+				{
+					"command": "workspaceIdentity.setForThisHost",
+					"when": "remoteName"
+				},
+				{
+					"command": "workspaceIdentity.chooseTheme",
+					"when": "remoteName"
+				},
+				{
+					"command": "workspaceIdentity.resetThisHost",
+					"when": "remoteName"
+				},
+				{
+					"command": "workspaceIdentity.cleanUpThisHost",
+					"when": "remoteName"
+				},
+				{
+					"command": "workspaceIdentity.openRemoteSettings",
+					"when": "remoteName"
+				}
+			]
+		}
+	},
+	"scripts": {
+		"build": "node esbuild.mjs",
+		"watch": "node esbuild.mjs --watch",
+		"typecheck": "tsc -p . --noEmit",
+		"test": "tsc -p . && node esbuild.mjs && node --test \"out/test/**/*.test.js\"",
+		"vscode:prepublish": "tsc -p . --noEmit && node esbuild.mjs --production",
+		"package": "vsce package --no-dependencies --skip-license"
+	},
+	"dependencies": {
+		"jsonc-parser": "^3.3.1"
+	},
+	"devDependencies": {
+		"@types/node": "^20.19.43",
+		"@types/vscode": "~1.90.0",
+		"@vscode/vsce": "^4.0.0",
+		"esbuild": "^0.28.2",
+		"typescript": "^5.9.3"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/lotan-souid/vscode-workspace-identity.git"
+	}
+}
